@@ -1,146 +1,155 @@
 package main
 
 import (
-	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 )
 
 type Artifact struct {
-	ArtifactVersion string    `json:"artifact_version"`
-	ArtifactID      string    `json:"artifact_id"`
-	Decision        any       `json:"decision"`
-	Signature       Signature `json:"signature"`
+	ArtifactID string `json:"artifact_id"`
 }
 
-type Signature struct {
-	Algorithm string `json:"algorithm"`
-	PublicKey []byte `json:"public_key"`
-	Value     []byte `json:"value"`
+type LogEntry struct {
+	ArtifactHash string `json:"artifact_hash"`
 }
 
-func canonicalizeJSON(data []byte) ([]byte, error) {
+func baseDir() string {
 
-	var obj any
-
-	err := json.Unmarshal(data, &obj)
+	exe, err := os.Executable()
 	if err != nil {
-		return nil, err
+		panic(err)
 	}
 
-	buf := &bytes.Buffer{}
-
-	enc := json.NewEncoder(buf)
-	enc.SetEscapeHTML(false)
-
-	err = enc.Encode(obj)
-	if err != nil {
-		return nil, err
-	}
-
-	return bytes.TrimSpace(buf.Bytes()), nil
+	return filepath.Dir(exe)
 }
 
-func computeArtifactID(canonical []byte) string {
-
-	hash := sha256.Sum256(canonical)
-
-	return hex.EncodeToString(hash[:])
+func artifactsDir() string {
+	return filepath.Join(baseDir(), "artifacts")
 }
 
-func appendToRegistry() {
-
-	cmd := exec.Command("../dip-registry/registry.exe", "append", "artifact.json")
-
-	output, err := cmd.CombinedOutput()
-
-	if err != nil {
-		fmt.Println("Registry append failed:", err)
-		return
-	}
-
-	fmt.Println(string(output))
+func logPath() string {
+	return filepath.Join(baseDir(), "log.json")
 }
 
-func signDecision(inputFile string) {
+func appendArtifact(path string) {
 
-	raw, err := os.ReadFile(inputFile)
+	data, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Println("Error reading decision file:", err)
+		fmt.Println("Error reading artifact:", err)
 		return
 	}
 
-	canonical, err := canonicalizeJSON(raw)
+	var artifact Artifact
+
+	err = json.Unmarshal(data, &artifact)
 	if err != nil {
-		fmt.Println("Canonicalization error:", err)
+		fmt.Println("Invalid artifact format:", err)
 		return
 	}
 
-	var decision any
-
-	json.Unmarshal(canonical, &decision)
-
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		fmt.Println("Key generation error:", err)
+	if artifact.ArtifactID == "" {
+		fmt.Println("artifact_id missing")
 		return
 	}
 
-	artifactID := computeArtifactID(canonical)
-
-	sig := ed25519.Sign(priv, canonical)
-
-	artifact := Artifact{
-		ArtifactVersion: "1.0",
-		ArtifactID:      artifactID,
-		Decision:        decision,
-		Signature: Signature{
-			Algorithm: "ed25519",
-			PublicKey: pub,
-			Value:     sig,
-		},
-	}
-
-	out, err := json.MarshalIndent(artifact, "", "  ")
+	err = os.MkdirAll(artifactsDir(), os.ModePerm)
 	if err != nil {
-		fmt.Println("Artifact encoding error:", err)
+		fmt.Println("Error creating artifacts directory:", err)
 		return
 	}
 
-	err = os.WriteFile("artifact.json", out, 0644)
+	target := filepath.Join(artifactsDir(), artifact.ArtifactID+".json")
+
+	err = os.WriteFile(target, data, 0644)
 	if err != nil {
-		fmt.Println("Artifact write error:", err)
+		fmt.Println("Error writing artifact:", err)
 		return
 	}
 
-	fmt.Println("DIP artifact created: artifact.json")
-	fmt.Println("Artifact ID:", artifactID)
+	var logEntries []LogEntry
 
-	appendToRegistry()
+	if _, err := os.Stat(logPath()); err == nil {
+
+		logData, err := os.ReadFile(logPath())
+		if err == nil {
+			json.Unmarshal(logData, &logEntries)
+		}
+	}
+
+	entry := LogEntry{
+		ArtifactHash: artifact.ArtifactID,
+	}
+
+	logEntries = append(logEntries, entry)
+
+	out, err := json.MarshalIndent(logEntries, "", "  ")
+	if err != nil {
+		fmt.Println("Error encoding log:", err)
+		return
+	}
+
+	err = os.WriteFile(logPath(), out, 0644)
+	if err != nil {
+		fmt.Println("Error writing log:", err)
+		return
+	}
+
+	fmt.Println("Record appended to registry")
+	fmt.Println("Stored as:", target)
+	fmt.Println("Artifact ID:", artifact.ArtifactID)
+}
+
+func verifyRegistry() {
+
+	data, err := os.ReadFile(logPath())
+	if err != nil {
+		fmt.Println("Error reading registry log:", err)
+		return
+	}
+
+	var entries []LogEntry
+
+	err = json.Unmarshal(data, &entries)
+	if err != nil {
+		fmt.Println("Invalid registry log")
+		return
+	}
+
+	fmt.Println("Registry entries:")
+
+	for _, entry := range entries {
+		fmt.Println(entry.ArtifactHash)
+	}
 }
 
 func main() {
 
-	if len(os.Args) < 3 {
-		fmt.Println("Usage:")
-		fmt.Println("  dip sign <decision.json>")
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: registry [append|verify] <artifact>")
 		return
 	}
 
 	cmd := os.Args[1]
 
-	if cmd == "sign" {
+	switch cmd {
 
-		signDecision(os.Args[2])
+	case "append":
 
-		return
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: registry append <artifact.json>")
+			return
+		}
+
+		appendArtifact(os.Args[2])
+
+	case "verify":
+
+		verifyRegistry()
+
+	default:
+
+		fmt.Println("Unknown command")
 	}
-
-	fmt.Println("Unknown command")
 }
