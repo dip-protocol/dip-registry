@@ -1,9 +1,0 @@
-{
-  "protocol_version": "1.0.0",
-  "decision_id": "dec-0001",
-  "timestamp": "2026-03-04T12:00:00Z",
-  "input_hash": "exampleinputhash",
-  "artifact_hash": "196ddfdd4cb5faec0cc1659bab97aaf3a9cd897856e3c3f271ebbee14a3d8653",
-  "signature": "5c7cf24d79a46e6dab70ca1907d31457d67c62d9d3a36512f2beb425de9573c5bb040fae77d8ac778ce036ef368e1ae33f2cd0846524919d0bc96ec9a155b40c",
-  "public_key": "121bc5c71b3ffd70185a2294921325c74c5f7b0d55e6a119f8df0c7c2dda40c4"
-}
