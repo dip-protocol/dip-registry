@@ -1,3 +1,9 @@
+# build artifacts
 *.exe
-artifacts/
+
+# ledger runtime files
 registry.log
+artifacts/
+
+# misc
+*.tmp
