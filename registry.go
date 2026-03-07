@@ -1,144 +1,146 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 )
 
-type Record struct {
-	ID       string                 `json:"decision_id"`
-	Data     map[string]interface{} `json:"data"`
-	PrevHash string                 `json:"prev_hash"`
-	Hash     string                 `json:"hash"`
+type Artifact struct {
+	ArtifactVersion string    `json:"artifact_version"`
+	ArtifactID      string    `json:"artifact_id"`
+	Decision        any       `json:"decision"`
+	Signature       Signature `json:"signature"`
 }
 
-func hashRecord(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
+type Signature struct {
+	Algorithm string `json:"algorithm"`
+	PublicKey []byte `json:"public_key"`
+	Value     []byte `json:"value"`
 }
 
-func getLastHash() string {
+func canonicalizeJSON(data []byte) ([]byte, error) {
 
-	file, err := os.Open("registry.log")
+	var obj any
+
+	err := json.Unmarshal(data, &obj)
 	if err != nil {
-		return ""
+		return nil, err
 	}
 
-	defer file.Close()
+	buf := &bytes.Buffer{}
 
-	var lastLine string
-	scanner := bufio.NewScanner(file)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false)
 
-	for scanner.Scan() {
-		lastLine = scanner.Text()
+	err = enc.Encode(obj)
+	if err != nil {
+		return nil, err
 	}
 
-	if lastLine == "" {
-		return ""
-	}
-
-	var rec Record
-	json.Unmarshal([]byte(lastLine), &rec)
-
-	return rec.Hash
+	return bytes.TrimSpace(buf.Bytes()), nil
 }
 
-func appendRecord(record Record) error {
+func computeArtifactID(canonical []byte) string {
 
-	record.PrevHash = getLastHash()
+	hash := sha256.Sum256(canonical)
 
-	dataBytes, err := json.Marshal(record.Data)
-	if err != nil {
-		return err
-	}
-
-	hashInput := append(dataBytes, []byte(record.PrevHash)...)
-	record.Hash = hashRecord(hashInput)
-
-	file, err := os.OpenFile("registry.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-
-	defer file.Close()
-
-	bytes, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-
-	_, err = file.Write(append(bytes, '\n'))
-	return err
+	return hex.EncodeToString(hash[:])
 }
 
-func verifyChain() error {
+func appendToRegistry() {
 
-	file, err := os.Open("registry.log")
+	cmd := exec.Command("../dip-registry/registry.exe", "append", "artifact.json")
+
+	output, err := cmd.CombinedOutput()
+
 	if err != nil {
-		return err
+		fmt.Println("Registry append failed:", err)
+		return
 	}
 
-	defer file.Close()
+	fmt.Println(string(output))
+}
 
-	scanner := bufio.NewScanner(file)
+func signDecision(inputFile string) {
 
-	var prevHash string
-
-	for scanner.Scan() {
-
-		var rec Record
-		err := json.Unmarshal(scanner.Bytes(), &rec)
-		if err != nil {
-			return err
-		}
-
-		if rec.PrevHash != prevHash {
-			return fmt.Errorf("chain broken at record %s", rec.ID)
-		}
-
-		prevHash = rec.Hash
+	raw, err := os.ReadFile(inputFile)
+	if err != nil {
+		fmt.Println("Error reading decision file:", err)
+		return
 	}
 
-	fmt.Println("Registry chain verified")
-	return nil
+	canonical, err := canonicalizeJSON(raw)
+	if err != nil {
+		fmt.Println("Canonicalization error:", err)
+		return
+	}
+
+	var decision any
+
+	json.Unmarshal(canonical, &decision)
+
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		fmt.Println("Key generation error:", err)
+		return
+	}
+
+	artifactID := computeArtifactID(canonical)
+
+	sig := ed25519.Sign(priv, canonical)
+
+	artifact := Artifact{
+		ArtifactVersion: "1.0",
+		ArtifactID:      artifactID,
+		Decision:        decision,
+		Signature: Signature{
+			Algorithm: "ed25519",
+			PublicKey: pub,
+			Value:     sig,
+		},
+	}
+
+	out, err := json.MarshalIndent(artifact, "", "  ")
+	if err != nil {
+		fmt.Println("Artifact encoding error:", err)
+		return
+	}
+
+	err = os.WriteFile("artifact.json", out, 0644)
+	if err != nil {
+		fmt.Println("Artifact write error:", err)
+		return
+	}
+
+	fmt.Println("DIP artifact created: artifact.json")
+	fmt.Println("Artifact ID:", artifactID)
+
+	appendToRegistry()
 }
 
 func main() {
 
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run registry.go [append|verify]")
+	if len(os.Args) < 3 {
+		fmt.Println("Usage:")
+		fmt.Println("  dip sign <decision.json>")
 		return
 	}
 
-	switch os.Args[1] {
+	cmd := os.Args[1]
 
-	case "append":
+	if cmd == "sign" {
 
-		rec := Record{
-			ID: "example-001",
-			Data: map[string]interface{}{
-				"status": "approved",
-			},
-		}
+		signDecision(os.Args[2])
 
-		err := appendRecord(rec)
-		if err != nil {
-			fmt.Println("Error:", err)
-			return
-		}
-
-		fmt.Println("Record appended to registry")
-
-	case "verify":
-
-		err := verifyChain()
-		if err != nil {
-			fmt.Println("Registry verification failed:", err)
-			return
-		}
+		return
 	}
+
+	fmt.Println("Unknown command")
 }
